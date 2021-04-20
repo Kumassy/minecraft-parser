@@ -7,7 +7,9 @@ const VARINT_MAX_BYTES: usize = 5;
 #[derive(Error, Debug, PartialEq)]
 pub enum MinecraftParseError {
     #[error("VarInt exceeds VARINT_MAX_BYTES length")]
-    VarIntTooLong,
+    InvalidVarInt,
+    #[error("u_short is corrupted")]
+    InvalidUShort,
     #[error("Byte-encoded string is corrupted")]
     InvalidStringEncoding(#[from] str::Utf8Error),
     #[error("Byte-encoded string length is not sufficient")]
@@ -27,10 +29,12 @@ pub struct Handshake {
     next_state: i32,
 }
 
-fn parse_ushort(buf: &mut dyn Buf) -> u16 {
-    // TODO: error if not sufficient
+fn parse_ushort(buf: &mut dyn Buf) -> Result<u16, MinecraftParseError> {
+    if buf.remaining() < 2 {
+        return Err(MinecraftParseError::InvalidUShort);
+    }
     let val = buf.get_u16();
-    val
+    Ok(val)
 }
 
 fn parse_varint(buf: &mut dyn Buf) -> Result<i32, MinecraftParseError> {
@@ -41,7 +45,7 @@ fn parse_varint(buf: &mut dyn Buf) -> Result<i32, MinecraftParseError> {
 
     while has_more {
         if i == VARINT_MAX_BYTES {
-            return Err(MinecraftParseError::VarIntTooLong)
+            return Err(MinecraftParseError::InvalidVarInt)
         }
         let byte = buf.get_u8();
         
@@ -79,7 +83,7 @@ pub fn parse_handshake(buf: &mut dyn Buf) -> Result<Handshake, MinecraftParseErr
 
     let version = parse_varint(buf)?;
     let address = parse_string_n(buf)?;
-    let port = parse_ushort(buf);
+    let port = parse_ushort(buf)?;
     let next_state = parse_varint(buf)?;
 
     let handshake = Handshake {
@@ -120,15 +124,22 @@ mod tests {
     #[test]
     fn parse_ushort_parse_25565() {
         let mut buf = &b"\x63\xdd"[..];
-        let val = parse_ushort(&mut buf);
+        let val = parse_ushort(&mut buf).unwrap();
         assert_eq!(val, 25565);
+    }
+
+    #[test]
+    fn parse_ushort_reject_1_byte() {
+        let mut buf = &b"\x63"[..];
+        let val = parse_ushort(&mut buf).err().unwrap();
+        assert_eq!(val, MinecraftParseError::InvalidUShort);
     }
 
     #[test]
     fn parse_varint_reject_too_large_num() {
         let mut buf = &b"\xf3\xf3\xf3\xf3\xf3\x05"[..];
         let val = parse_varint(&mut buf).err().unwrap();
-        assert!(matches!(val, MinecraftParseError::VarIntTooLong));
+        assert!(matches!(val, MinecraftParseError::InvalidVarInt));
     }
 
     #[test]
